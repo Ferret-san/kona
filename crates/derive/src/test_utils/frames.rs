@@ -5,7 +5,7 @@ use crate::{
     stages::{test_utils::MockFrameQueueProvider, ChannelBankProvider, FrameQueue},
     traits::OriginProvider,
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec, vec::Vec};
 use alloy_primitives::Bytes;
 use op_alloy_genesis::RollupConfig;
 use op_alloy_protocol::{BlockInfo, Frame, DERIVATION_VERSION_0};
