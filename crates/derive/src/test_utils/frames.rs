@@ -1,7 +1,7 @@
 //! Frames
 
 use crate::{
-    errors::PipelineError,
+    errors::{PipelineError, PipelineErrorKind},
     stages::{test_utils::MockFrameQueueProvider, ChannelBankProvider, FrameQueue},
     traits::OriginProvider,
 };
@@ -17,6 +17,7 @@ pub struct FrameQueueBuilder {
     config: Option<RollupConfig>,
     mock: Option<MockFrameQueueProvider>,
     expected_frames: Vec<Frame>,
+    expected_err: Option<PipelineErrorKind>,
 }
 
 fn encode_frames(frames: &[Frame]) -> Bytes {
@@ -31,7 +32,7 @@ fn encode_frames(frames: &[Frame]) -> Bytes {
 impl FrameQueueBuilder {
     /// Create a new [FrameQueueBuilder] instance.
     pub const fn new() -> Self {
-        Self { origin: None, config: None, mock: None, expected_frames: vec![] }
+        Self { origin: None, config: None, mock: None, expected_frames: vec![], expected_err: None }
     }
 
     /// Sets the rollup config.
@@ -52,6 +53,19 @@ impl FrameQueueBuilder {
         self
     }
 
+    /// Sets the expected error type.
+    pub fn with_expected_err(mut self, err: PipelineErrorKind) -> Self {
+        self.expected_err = Some(err);
+        self
+    }
+
+    /// With raw frames.
+    pub fn with_raw_frames(mut self, raw: Bytes) -> Self {
+        let mock = self.mock.unwrap_or_else(|| MockFrameQueueProvider::new(vec![Ok(raw)]));
+        self.mock = Some(mock);
+        self
+    }
+
     /// Adds frames to the mock provider.
     pub fn with_frames(mut self, frames: &[Frame]) -> Self {
         let encoded = encode_frames(frames);
@@ -68,7 +82,8 @@ impl FrameQueueBuilder {
         }
         let config = self.config.unwrap_or_default();
         let config = Arc::new(config);
-        FrameQueueAsserter::new(FrameQueue::new(mock, config), self.expected_frames)
+        let err = self.expected_err.unwrap_or_else(|| PipelineError::Eof.temp());
+        FrameQueueAsserter::new(FrameQueue::new(mock, config), self.expected_frames, err)
     }
 }
 
@@ -77,6 +92,7 @@ impl FrameQueueBuilder {
 pub struct FrameQueueAsserter {
     inner: FrameQueue<MockFrameQueueProvider>,
     expected_frames: Vec<Frame>,
+    expected_err: PipelineErrorKind,
 }
 
 impl FrameQueueAsserter {
@@ -84,8 +100,9 @@ impl FrameQueueAsserter {
     pub const fn new(
         inner: FrameQueue<MockFrameQueueProvider>,
         expected_frames: Vec<Frame>,
+        expected_err: PipelineErrorKind,
     ) -> Self {
-        Self { inner, expected_frames }
+        Self { inner, expected_frames, expected_err }
     }
 
     /// Asserts that holocene is active.
@@ -111,6 +128,6 @@ impl FrameQueueAsserter {
             assert_eq!(frame, eframe);
         }
         let err = self.inner.next_frame().await.unwrap_err();
-        assert_eq!(err, PipelineError::Eof.temp());
+        assert_eq!(err, self.expected_err);
     }
 }

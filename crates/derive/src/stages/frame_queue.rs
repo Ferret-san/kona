@@ -203,33 +203,7 @@ where
 pub(crate) mod tests {
     use super::*;
     use crate::stages::test_utils::MockFrameQueueProvider;
-    use alloc::{vec, vec::Vec};
-    use op_alloy_protocol::DERIVATION_VERSION_0;
-
-    pub(crate) fn new_test_frames(count: usize) -> Vec<Frame> {
-        (0..count)
-            .map(|i| Frame {
-                id: [0xFF; 16],
-                number: i as u16,
-                data: vec![0xDD; 50],
-                is_last: i == count - 1,
-            })
-            .collect()
-    }
-
-    pub(crate) fn encode_frames(frames: Vec<Frame>) -> Bytes {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[DERIVATION_VERSION_0]);
-        for frame in frames.iter() {
-            bytes.extend_from_slice(&frame.encode());
-        }
-        Bytes::from(bytes)
-    }
-
-    pub(crate) fn new_encoded_test_frames(count: usize) -> Bytes {
-        let frames = new_test_frames(count);
-        encode_frames(frames)
-    }
+    use alloc::vec;
 
     #[tokio::test]
     async fn test_frame_queue_empty_bytes() {
@@ -255,53 +229,52 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_frame_queue_wrong_derivation_version() {
-        let data = vec![Ok(Bytes::from(vec![0x01]))];
-        let mut mock = MockFrameQueueProvider::new(data);
-        mock.set_origin(BlockInfo::default());
-        let mut frame_queue = FrameQueue::new(mock, Default::default());
-        assert!(!frame_queue.is_holocene_active(BlockInfo::default()));
-        let err = frame_queue.next_frame().await.unwrap_err();
-        assert_eq!(err, PipelineError::NotEnoughData.temp());
+        let assert = crate::test_utils::FrameQueueBuilder::new()
+            .with_origin(BlockInfo::default())
+            .with_raw_frames(Bytes::from(vec![0x01]))
+            .with_expected_err(PipelineError::NotEnoughData.temp())
+            .build();
+        assert.holocene_active(false);
+        assert.next_frames().await;
     }
 
     #[tokio::test]
     async fn test_frame_queue_frame_too_short() {
-        let data = vec![Ok(Bytes::from(vec![0x00, 0x01]))];
-        let mut mock = MockFrameQueueProvider::new(data);
-        mock.set_origin(BlockInfo::default());
-        let mut frame_queue = FrameQueue::new(mock, Default::default());
-        assert!(!frame_queue.is_holocene_active(BlockInfo::default()));
-        let err = frame_queue.next_frame().await.unwrap_err();
-        assert_eq!(err, PipelineError::NotEnoughData.temp());
+        let assert = crate::test_utils::FrameQueueBuilder::new()
+            .with_origin(BlockInfo::default())
+            .with_raw_frames(Bytes::from(vec![0x00, 0x01]))
+            .with_expected_err(PipelineError::NotEnoughData.temp())
+            .build();
+        assert.holocene_active(false);
+        assert.next_frames().await;
     }
 
     #[tokio::test]
     async fn test_frame_queue_single_frame() {
-        let data = new_encoded_test_frames(1);
-        let mut mock = MockFrameQueueProvider::new(vec![Ok(data)]);
-        mock.set_origin(BlockInfo::default());
-        let mut frame_queue = FrameQueue::new(mock, Default::default());
-        assert!(!frame_queue.is_holocene_active(BlockInfo::default()));
-        let frame_decoded = frame_queue.next_frame().await.unwrap();
-        let frame = new_test_frames(1);
-        assert_eq!(frame[0], frame_decoded);
-        let err = frame_queue.next_frame().await.unwrap_err();
-        assert_eq!(err, PipelineError::Eof.temp());
+        let frames = [crate::frame!(0xFF, 0, vec![0xDD; 50], true)];
+        let assert = crate::test_utils::FrameQueueBuilder::new()
+            .with_expected_frames(&frames)
+            .with_origin(BlockInfo::default())
+            .with_frames(&frames)
+            .build();
+        assert.holocene_active(false);
+        assert.next_frames().await;
     }
 
     #[tokio::test]
     async fn test_frame_queue_multiple_frames() {
-        let data = new_encoded_test_frames(3);
-        let mut mock = MockFrameQueueProvider::new(vec![Ok(data)]);
-        mock.set_origin(BlockInfo::default());
-        let mut frame_queue = FrameQueue::new(mock, Default::default());
-        assert!(!frame_queue.is_holocene_active(BlockInfo::default()));
-        for i in 0..3 {
-            let frame_decoded = frame_queue.next_frame().await.unwrap();
-            assert_eq!(frame_decoded.number, i);
-        }
-        let err = frame_queue.next_frame().await.unwrap_err();
-        assert_eq!(err, PipelineError::Eof.temp());
+        let frames = [
+            crate::frame!(0xFF, 0, vec![0xDD; 50], false),
+            crate::frame!(0xFF, 1, vec![0xDD; 50], false),
+            crate::frame!(0xFF, 2, vec![0xDD; 50], true),
+        ];
+        let assert = crate::test_utils::FrameQueueBuilder::new()
+            .with_expected_frames(&frames)
+            .with_origin(BlockInfo::default())
+            .with_frames(&frames)
+            .build();
+        assert.holocene_active(false);
+        assert.next_frames().await;
     }
 
     #[tokio::test]
