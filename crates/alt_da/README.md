@@ -1,6 +1,6 @@
-# `kona-plasma`
+# `kona-altda`
 
-Plasma Data Availability Adapter for `kona-derive`.
+AltDA Data Availability Adapter for `kona-derive`.
 
 [plasma]: https://specs.optimism.io/experimental/plasma.html
 

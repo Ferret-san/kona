@@ -6,15 +6,20 @@
 
 extern crate alloc;
 
-pub mod plasma;
+pub mod alt_da;
 pub mod source;
+pub mod state;
 pub mod traits;
 pub mod types;
 
 #[cfg(feature = "online")]
 mod online;
 #[cfg(feature = "online")]
-pub use online::OnlinePlasmaInputFetcher;
+pub use online::OnlineAltDAInputFetcher;
+#[cfg(feature = "online")]
+mod da_client;
+#[cfg(feature = "online")]
+pub use da_client::DAClient;
 
 #[cfg(test)]
 pub mod test_utils;
