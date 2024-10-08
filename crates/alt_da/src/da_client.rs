@@ -1,6 +1,6 @@
 //! alt DA client
 use crate::types::{
-    decode_commitment_data, new_commitment_data, CommitmentData, CommitmentType, AltDaError,
+    decode_commitment_data, new_commitment_data, AltDaError, CommitmentData, CommitmentType,
 };
 use alloc::boxed::Box;
 use alloc::format;
@@ -19,10 +19,12 @@ pub struct DAClient {
 }
 
 impl DAClient {
+    /// Instantiates DAClient with a URL
     pub fn new(url: String, verify: bool, precompute: bool) -> Self {
         DAClient { url, verify, precompute, client: Client::new() }
     }
 
+    /// Fetches input from altDA server
     pub async fn get_input(&self, comm: &dyn CommitmentData) -> Result<Bytes, AltDaError> {
         let url = format!("{}/get/0x{}", self.url, hex::encode(comm.encode()));
 
@@ -45,6 +47,7 @@ impl DAClient {
         Ok(input)
     }
 
+    /// Sets the input for commitment from the altda server
     pub async fn set_input(&self, img: &Bytes) -> Result<Box<dyn CommitmentData>, AltDaError> {
         if img.is_empty() {
             return Err(AltDaError::InvalidInput);

@@ -6,8 +6,24 @@ use alloc::vec::Vec;
 use alloy_primitives::hex;
 use alloy_primitives::utils::keccak256;
 use alloy_primitives::{Bytes, U256};
-use core::fmt::Display;
-use kona_primitives::BlockInfo;
+use alloy_rpc_types::Log;
+use anyhow::{anyhow, Error};
+use core::any::Any;
+use core::fmt::{Debug, Display};
+use op_alloy_protocol::BlockInfo;
+
+/// InputFetcherConfig struct
+#[derive(Debug, Clone)]
+pub struct InputFetcherConfig {
+    // Used to filtercontract events
+    pub da_challenge_contract: alloy_primitives::Address,
+    // Allowed commitment type for the input fetcher
+    pub commitment_type: CommitmentType,
+    // The number of l1 blocks after the input is committed during which one can challenge.
+    pub challenge_window: u64,
+    // The number of l1 blocksafter a commitmnet s challenged during which one can resolve.
+    pub resolve_window: u64,
+}
 
 /// A altda error.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -38,6 +54,10 @@ pub enum AltDaError {
     NetworkError,
     /// A mismatch between the commitment used to fetch the preimage and the commitment for the preimage ocurred
     CommitmentMismatch,
+    /// Could not decode a challenge event
+    DecodeError,
+    /// Unknown challenge status
+    UnknownStatus,
 }
 
 impl Display for AltDaError {
@@ -56,12 +76,14 @@ impl Display for AltDaError {
             Self::InvalidInput => write!(f, "invalid input"),
             Self::NetworkError => write!(f, "network error"),
             Self::CommitmentMismatch => write!(f, "commitment mistmatch"),
+            Self::DecodeError => write!(f, "could not decode challenge event"),
+            Self::UnknownStatus => write!(f, "unknown challenge status"),
         }
     }
 }
 
 /// A callback method for the finalized head signal.
-pub type FinalizedHeadSignal = Box<dyn Fn(BlockInfo) + Send>;
+pub type FinalizedHeadSignal = Box<dyn Fn(BlockInfo) + Send + Sync>;
 
 /// Max input size ensures the canonical chain cannot include input batches too large to
 /// challenge in the Data Availability Challenge contract. Value in number of bytes.
@@ -75,7 +97,6 @@ pub const TX_DATA_VERSION_1: u8 = 1;
 
 pub const CHALLENGE_STATUS_EVENT_NAME: &str = "ChallengeStatusChanged";
 pub const CHALLENGE_STATUS_EVENT_ABI: &str = "ChallengeStatusChanged(uint256,bytes,uint8)";
-pub const CHALLENGE_STATUS_EVENT_ABI_HASH: B256 = keccak256(CHALLENGE_STATUS_EVENT_ABI.as_bytes());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitmentType {
@@ -93,15 +114,23 @@ impl CommitmentType {
     }
 }
 
-pub trait CommitmentData: Send + Sync {
+pub trait CommitmentData: Send + Sync + Debug {
     fn commitment_type(&self) -> CommitmentType;
     fn encode(&self) -> Bytes;
     fn tx_data(&self) -> Bytes;
     fn verify(&self, input: &[u8]) -> Result<(), AltDaError>;
     fn to_string(&self) -> String;
+    fn clone_box(&self) -> Box<dyn CommitmentData + Send + Sync>;
+    fn as_any(&self) -> &dyn Any;
 }
 
-#[derive(Clone, PartialEq, Eq)]
+impl Clone for Box<dyn CommitmentData + Send + Sync> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keccak256Commitment(Bytes);
 
 impl Keccak256Commitment {
@@ -150,9 +179,17 @@ impl CommitmentData for Keccak256Commitment {
     fn to_string(&self) -> String {
         hex::encode(self.encode())
     }
+
+    fn clone_box(&self) -> Box<dyn CommitmentData + Send + Sync> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenericCommitment(Bytes);
 
 impl GenericCommitment {
@@ -195,16 +232,29 @@ impl CommitmentData for GenericCommitment {
     fn to_string(&self) -> String {
         hex::encode(self.encode())
     }
+
+    fn clone_box(&self) -> Box<dyn CommitmentData + Send + Sync> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
-pub fn new_commitment_data(t: CommitmentType, input: &[u8]) -> Box<dyn CommitmentData> {
+pub fn new_commitment_data(
+    t: CommitmentType,
+    input: &[u8],
+) -> Box<dyn CommitmentData + Send + Sync> {
     match t {
         CommitmentType::Keccak256 => Box::new(Keccak256Commitment::new(input)),
         CommitmentType::Generic => Box::new(GenericCommitment::new(input)),
     }
 }
 
-pub fn decode_commitment_data(input: &[u8]) -> Result<Box<dyn CommitmentData>, AltDaError> {
+pub fn decode_commitment_data(
+    input: &[u8],
+) -> Result<Box<dyn CommitmentData + Send + Sync>, AltDaError> {
     if input.is_empty() {
         return Err(AltDaError::InvalidCommitment);
     }
@@ -217,24 +267,36 @@ pub fn decode_commitment_data(input: &[u8]) -> Result<Box<dyn CommitmentData>, A
     }
 }
 
-pub fn decode_challenge_status_event(log: &Log) -> Result<(Bytes, U256, u8)> {
+pub fn decode_challenge_status_event(log: &Log) -> Result<(Bytes, u64, u8), Error> {
     // Ensure we have the correct number of topics
-
-    if log.topics()[0] == *CHALLENGE_STATUS_EVENT_ABI_HASH {
+    if log.topics().len() != 3 {
         return Err(anyhow!("Invalid number of topics for ChallengeStatusChanged event"));
     }
 
+    // Check if the first topic matches the event signature
+    let event_signature = keccak256(CHALLENGE_STATUS_EVENT_ABI.as_bytes());
+    if log.topics()[0] != event_signature {
+        return Err(anyhow!("Invalid event signature"));
+    }
+
     // Parse indexed parameters from topics
-    let challenged_commitment = Bytes::from(log.topics()[1].as_slice());
-    let block_number = U256::from_be_bytes(log.topics()[2].as_slice());
+    let challenged_commitment = Bytes::from(log.topics()[1]);
+    let block_number_u256 = U256::from_be_bytes(log.topics()[2].into());
+
+    let block_number =
+        block_number_u256.try_into().map_err(|_| anyhow!("Block number too large")).unwrap();
 
     // Decode the non-indexed parameter (status) from the data field
-    let status = u8::from(&log.data)?.into();
+    let status = if log.inner.data.data.len() >= 32 {
+        log.inner.data.data[31] // Assuming status is the last byte of the 32-byte word
+    } else {
+        return Err(anyhow!("Invalid data length for status"));
+    };
 
     Ok((challenged_commitment, block_number, status))
 }
 
-pub fn decode_resolved_input(data: &[u8]) -> Result<Vec<u8>> {
+pub fn decode_resolved_input(data: &[u8]) -> Result<Vec<u8>, Error> {
     // Check if the data is long enough (4 bytes for function selector + at least 32 bytes for data)
     if data.len() < 36 {
         return Err(anyhow!("Input data too short"));

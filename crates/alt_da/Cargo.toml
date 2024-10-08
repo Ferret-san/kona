@@ -14,13 +14,19 @@ anyhow.workspace = true
 tracing.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-eips.workspace = true
+alloy-rpc-types.workspace = true
 async-trait.workspace = true
+tokio.workspace = true
 op-alloy-consensus.workspace = true
+op-alloy-protocol.workspace = true
+op-alloy-genesis.workspace = true
 
 # Local
-kona-common = { path = "../common", version = "0.0.2" }
-kona-primitives = { path = "../primitives", version = "0.0.1" }
-kona-derive = { path = "../derive", version = "0.0.2" }
+kona-common = { path = "../common", version = "0.0.3" }
+kona-primitives = { path = "../primitives", version = "0.0.2" }
+kona-derive = { path = "../derive", version = "0.0.3" }
+kona-providers-alloy = { path = "../providers-alloy", version = "0.0.1"}
 
 # `serde` feature dependencies
 serde = { version = "1.0.203", default-features = false, features = ["derive"], optional = true }

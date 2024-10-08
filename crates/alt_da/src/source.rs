@@ -1,20 +1,22 @@
 //! AltDA Data Source
 
 use crate::{
-    traits::{AltDaInputFetcher, AltDaInputFetcher},
-    types::{AltDaError, CommitmentData, Keccak256Commitment, MAX_INPUT_SIZE, TX_DATA_VERSION_1},
+    traits::AltDaInputFetcher,
+    types::{
+        decode_commitment_data, AltDaError, CommitmentData, MAX_INPUT_SIZE, TX_DATA_VERSION_1,
+    },
 };
-use alloc::boxed::Box;
-use alloy_primitives::Bytes;
-use anyhow::anyhow;
+use alloc::sync::Arc;
+use alloc::{boxed::Box, string::ToString};
+use alloy_eips::BlockNumHash;
+use alloy_primitives::{hex, Bytes};
 use async_trait::async_trait;
-use kona_derive::{
-    traits::{AsyncIterator, ChainProvider},
-    types::{BlockID, ResetError, StageError, StageResult},
-};
+use kona_derive::errors::{PipelineErrorKind, ResetError};
+use kona_derive::pipeline::{ChainProvider, PipelineError, PipelineResult};
+use kona_derive::traits::AsyncIterator;
 
 /// An altda data iterator.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AltDaSource<C, F, I>
 where
     C: ChainProvider + Send,
@@ -28,9 +30,9 @@ where
     /// A source data iterator.
     pub source: I,
     /// Keeps track of a pending commitment so we can keep trying to fetch the input.
-    pub commitment: Option<dyn CommitmentData>,
+    pub commitment: Option<Box<dyn CommitmentData + Send + Sync>>,
     /// The block id.
-    pub id: BlockID,
+    pub id: BlockNumHash,
 }
 
 impl<C, F, I> AltDaSource<C, F, I>
@@ -40,7 +42,7 @@ where
     I: Iterator<Item = Bytes>,
 {
     /// Instantiates a new altda data source.
-    pub fn new(chain_provider: C, input_fetcher: F, source: I, id: BlockID) -> Self {
+    pub fn new(chain_provider: C, input_fetcher: F, source: I, id: BlockNumHash) -> Self {
         Self { chain_provider, input_fetcher, source, id, commitment: None }
     }
 }
@@ -54,28 +56,26 @@ where
 {
     type Item = Bytes;
 
-    async fn next(&mut self) -> StageResult<Self::Item> {
+    async fn next(&mut self) -> PipelineResult<Self::Item> {
         // Process origin syncs the challenge contract events and updates the local challenge states
         // before we can proceed to fetch the input data. This function can be called multiple times
         // for the same origin and noop if the origin was already processed. It is also called if
         // there is not commitment in the current origin.
         match self.input_fetcher.advance_l1_origin(&self.chain_provider, self.id).await {
-            Some(Ok(_)) => {
+            Ok(_) => {
                 tracing::debug!("altda input fetcher - l1 origin advanced");
             }
-            Some(Err(AltDaError::ReorgRequired)) => {
+            Err(AltDaError::ReorgRequired) => {
                 tracing::error!("new expired challenge");
-                return StageResult::Err(StageError::Reset(ResetError::NewExpiredChallenge));
+                return PipelineResult::Err(PipelineErrorKind::Reset(
+                    ResetError::NewExpiredChallenge,
+                ));
             }
-            Some(Err(e)) => {
+            Err(e) => {
                 tracing::error!("failed to advance altda L1 origin: {:?}", e);
-                return StageResult::Err(StageError::Temporary(anyhow::anyhow!(
-                    "failed to advance altda L1 origin: {:?}",
-                    e
-                )));
-            }
-            None => {
-                tracing::warn!("l1 origin advance returned None");
+                return PipelineResult::Err(PipelineErrorKind::Temporary(
+                    PipelineError::AltDaAdvanceFailed(e.to_string()),
+                ));
             }
         }
 
@@ -84,16 +84,16 @@ where
             // The l1 source returns the input commitment for the batch.
             let data = match self.source.next().ok_or(AltDaError::NotEnoughData) {
                 Ok(d) => d,
-                Err(e) => {
+                Err(_) => {
                     tracing::warn!("failed to pull next data from the altda source iterator");
-                    return Err(StageError::Custom(anyhow!(e)));
+                    return Err(PipelineErrorKind::Temporary(PipelineError::NotEnoughData));
                 }
             };
 
             // If the data is empty,
             if data.is_empty() {
                 tracing::warn!("empty data from altda source");
-                return Err(StageError::Custom(anyhow!(AltDaError::NotEnoughData)));
+                return Err(PipelineErrorKind::Temporary(PipelineError::NotEnoughData));
             }
 
             // If the tx data type is not altda, we forward it downstream to let the next
@@ -103,66 +103,58 @@ where
                 return Ok(data);
             }
 
-            // Need to handle generic commitments
             // Validate that the batcher inbox data is a commitment.
             self.commitment = match decode_commitment_data(&data[1..]) {
                 Ok(c) => Some(c),
                 Err(e) => {
                     tracing::warn!("invalid commitment: {}, err: {}", data, e);
-                    return self.next().await;
+                    return Err(PipelineErrorKind::Temporary(PipelineError::NotEnoughData));
                 }
             };
         }
 
         // Use the commitment to fetch the input from the altda DA provider.
-        let commitment = self.commitment.as_ref().expect("the commitment must be set");
+        let commitment = match &self.commitment {
+            Some(c) => c,
+            None => return Err(PipelineErrorKind::Temporary(PipelineError::NotEnoughData)),
+        };
 
         // Fetch the input data from the altda DA provider.
         let data = match self
             .input_fetcher
-            .get_input(&self.chain_provider, commitment.clone(), self.id)
+            .get_input(&self.chain_provider, Arc::new(commitment.clone()), self.id)
             .await
         {
-            Some(Ok(data)) => data,
-            Some(Err(AltDaError::ReorgRequired)) => {
+            Ok(data) => data,
+            Err(AltDaError::ReorgRequired) => {
                 // The altda fetcher may call for a reorg if the pipeline is stalled and the altda
                 // DA manager continued syncing origins detached from the pipeline
                 // origin.
                 tracing::warn!("challenge for a new previously derived commitment expired");
-                return Err(StageError::Reset(ResetError::ReorgRequired));
+                return Err(PipelineErrorKind::Reset(ResetError::NewExpiredChallenge));
             }
-            Some(Err(AltDaError::ChallengeExpired)) => {
+            Err(AltDaError::ChallengeExpired) => {
                 // This commitment was challenged and the challenge expired.
                 tracing::warn!("challenge expired, skipping batch");
                 self.commitment = None;
                 // Skip the input.
                 return self.next().await;
             }
-            Some(Err(AltDaError::MissingPastWindow)) => {
+            Err(AltDaError::MissingPastWindow) => {
                 tracing::warn!("missing past window, skipping batch");
-                return Err(StageError::Critical(anyhow::anyhow!(
-                    "data for commitment {:?} not available",
-                    commitment
+                return Err(PipelineErrorKind::Critical(PipelineError::CommitmentDataEmpty(
+                    hex::encode(commitment.to_string()),
                 )));
             }
-            Some(Err(AltDaError::ChallengePending)) => {
+            Err(AltDaError::ChallengePending) => {
                 // Continue stepping without slowing down.
                 tracing::debug!("altda challenge pending, proceeding");
-                return Err(StageError::NotEnoughData);
+                return Err(PipelineErrorKind::Temporary(PipelineError::NotEnoughData));
             }
-            Some(Err(e)) => {
+            Err(_) => {
                 // Return temporary error so we can keep retrying.
-                return Err(StageError::Temporary(anyhow::anyhow!(
-                    "failed to fetch input data with comm {:?} from da service: {:?}",
-                    commitment,
-                    e
-                )));
-            }
-            None => {
-                // Return temporary error so we can keep retrying.
-                return Err(StageError::Temporary(anyhow::anyhow!(
-                    "failed to fetch input data with comm {:?} from da service",
-                    commitment
+                return Err(PipelineErrorKind::Temporary(PipelineError::CommitmentDataEmpty(
+                    commitment.to_string(),
                 )));
             }
         };
@@ -185,7 +177,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{TestAltDAInputFetcher, TestAltDAInputFetchers};
+    use crate::test_utils::TestAltDAInputFetcher;
     use alloc::vec;
     use kona_derive::{
         stages::test_utils::{CollectingLayer, TraceStorage},
@@ -202,12 +194,12 @@ mod tests {
             ..Default::default()
         };
         let source = vec![Bytes::from("hello"), Bytes::from("world")].into_iter();
-        let id = BlockID { number: 1, ..Default::default() };
+        let id = BlockNumHash { number: 1, ..Default::default() };
 
         let mut altda_source = AltDaSource::new(chain_provider, input_fetcher, source, id);
 
-        let err = altda_source_source.next().await.unwrap_err();
-        assert_eq!(err, StageError::Reset(ResetError::NewExpiredChallenge));
+        let err = altda_source.next().await.unwrap_err();
+        assert_eq!(err, PipelineErrorKind::Reset(ResetError::NewExpiredChallenge));
     }
 
     #[tokio::test]
@@ -218,12 +210,12 @@ mod tests {
             ..Default::default()
         };
         let source = vec![Bytes::from("hello"), Bytes::from("world")].into_iter();
-        let id = BlockID { number: 1, ..Default::default() };
+        let id = BlockNumHash { number: 1, ..Default::default() };
 
         let mut altda_source = AltDaSource::new(chain_provider, input_fetcher, source, id);
 
         let err = altda_source.next().await.unwrap_err();
-        matches!(err, StageError::Temporary(_));
+        matches!(err, PipelineErrorKind::Temporary(_));
     }
 
     #[tokio::test]
@@ -231,12 +223,12 @@ mod tests {
         let chain_provider = TestChainProvider::default();
         let input_fetcher = TestAltDAInputFetcher { advances: vec![Ok(())], ..Default::default() };
         let source = vec![].into_iter();
-        let id = BlockID { number: 1, ..Default::default() };
+        let id = BlockNumHash { number: 1, ..Default::default() };
 
         let mut altda_source = AltDaSource::new(chain_provider, input_fetcher, source, id);
 
         let err = altda_source.next().await.unwrap_err();
-        assert_eq!(err, StageError::Custom(anyhow!(AltDaError::NotEnoughData)));
+        assert_eq!(err, PipelineErrorKind::Temporary(PipelineError::NotEnoughData));
     }
 
     #[tokio::test]
@@ -248,12 +240,12 @@ mod tests {
         let chain_provider = TestChainProvider::default();
         let input_fetcher = TestAltDAInputFetcher { advances: vec![Ok(())], ..Default::default() };
         let source = vec![Bytes::from("")].into_iter();
-        let id = BlockID { number: 1, ..Default::default() };
+        let id = BlockNumHash { number: 1, ..Default::default() };
 
         let mut altda_source = AltDaSource::new(chain_provider, input_fetcher, source, id);
 
         let err = altda_source.next().await.unwrap_err();
-        assert_eq!(err, StageError::Custom(anyhow!(AltDaError::NotEnoughData)));
+        assert_eq!(err, PipelineErrorKind::Critical(PipelineError::NotEnoughData));
 
         let logs = trace_store.get_by_level(Level::WARN);
         assert_eq!(logs.len(), 1);
@@ -270,7 +262,7 @@ mod tests {
         let input_fetcher = TestAltDAInputFetcher { advances: vec![Ok(())], ..Default::default() };
         let first = Bytes::copy_from_slice(&[2u8]);
         let source = vec![first.clone()].into_iter();
-        let id = BlockID { number: 1, ..Default::default() };
+        let id = BlockNumHash { number: 1, ..Default::default() };
 
         let mut altda_source = AltDaSource::new(chain_provider, input_fetcher, source, id);
 

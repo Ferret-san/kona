@@ -7,9 +7,10 @@ use alloc::{boxed::Box, fmt::Debug};
 use alloy_primitives::Bytes;
 use anyhow::Result;
 use async_trait::async_trait;
-use kona_derive::traits::{ChainProvider, DataAvailabilityProvider};
-use kona_primitives::BlockInfo;
-use tracing_subscriber::field::debug::Alt;
+use kona_derive::errors::PipelineErrorKind;
+use kona_derive::pipeline::ChainProvider;
+use kona_derive::traits::DataAvailabilityProvider;
+use op_alloy_protocol::BlockInfo;
 
 /// The AltDA data source implements the [DataAvailabilityProvider] trait for the AltDA source.
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +41,7 @@ where
 }
 
 #[async_trait]
-impl<C, F, I> DataAvailabilityProvider for AltDADataSource<C, F, I>
+impl<C, F, I> DataAvailabilityProvider for AltDaDataSource<C, F, I>
 where
     C: ChainProvider + Send + Clone + Debug + Sync,
     F: AltDaInputFetcher<C> + Clone + Debug + Send + Sync,
@@ -49,7 +50,7 @@ where
     type Item = Bytes;
     type DataIter = AltDaSource<C, F, I>;
 
-    async fn open_data(&self, block_ref: &BlockInfo) -> Result<Self::DataIter> {
+    async fn open_data(&self, block_ref: &BlockInfo) -> Result<Self::DataIter, PipelineErrorKind> {
         Ok(AltDaSource::new(
             self.chain_provider.clone(),
             self.altda_input_fetcher.clone(),

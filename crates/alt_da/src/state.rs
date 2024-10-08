@@ -1,14 +1,15 @@
+use alloy_eips::BlockNumHash;
 use alloy_primitives::Bytes;
 
-use crate::online::InputFetcherConfig;
-use crate::types::{CommitmentData, AltDaError};
+use crate::types::{AltDaError, CommitmentData, InputFetcherConfig};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloy_primitives::hex;
 use alloy_primitives::map::HashMap;
-use kona_primitives::BlockInfo;
+use op_alloy_protocol::BlockInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChallengeStatus {
@@ -18,18 +19,31 @@ pub enum ChallengeStatus {
     Expired,
 }
 
+#[derive(Clone)]
 pub struct Commitment {
-    pub data: Box<dyn CommitmentData>,
+    pub data: Arc<Box<dyn CommitmentData + Send + Sync>>,
     pub inclusion_block: BlockInfo,
     pub challenge_window_end: u64,
 }
 
 pub struct Challenge {
-    pub commitment_data: Box<dyn CommitmentData>,
+    pub commitment_data: Arc<Box<dyn CommitmentData + Send + Sync>>,
     pub commitment_inclusion_block_number: u64,
     pub resolve_window_end: u64,
     pub input: Option<Bytes>,
     pub challenge_status: ChallengeStatus,
+}
+
+impl Clone for Challenge {
+    fn clone(&self) -> Self {
+        Challenge {
+            commitment_data: self.commitment_data.clone(),
+            commitment_inclusion_block_number: self.commitment_inclusion_block_number,
+            resolve_window_end: self.resolve_window_end,
+            input: self.input.clone(),
+            challenge_status: self.challenge_status.clone(),
+        }
+    }
 }
 
 impl Challenge {
@@ -42,6 +56,14 @@ impl Challenge {
     }
 }
 
+fn challenge_key(
+    comm: Arc<Box<dyn CommitmentData + Send + Sync>>,
+    inclusion_block_number: u64,
+) -> String {
+    let encoded = comm.encode();
+    format!("{:016x}{}", inclusion_block_number, hex::encode(&encoded))
+}
+
 pub struct State {
     pub commitments: Vec<Commitment>,
     pub expired_commitments: Vec<Commitment>,
@@ -52,8 +74,22 @@ pub struct State {
     pub cfg: InputFetcherConfig,
 }
 
+impl Clone for State {
+    fn clone(&self) -> Self {
+        State {
+            commitments: self.commitments.clone(),
+            expired_commitments: self.expired_commitments.clone(),
+            challenges: self.challenges.clone(),
+            expired_challenges: self.expired_challenges.clone(),
+            challenges_map: self.challenges_map.clone(),
+            last_pruned_commitment: self.last_pruned_commitment.clone(),
+            cfg: self.cfg.clone(),
+        }
+    }
+}
+
 impl State {
-    pub fn new(log: Logger, cfg: Config) -> Self {
+    pub fn new(cfg: InputFetcherConfig) -> Self {
         State {
             commitments: Vec::new(),
             expired_commitments: Vec::new(),
@@ -80,8 +116,8 @@ impl State {
 
     pub fn create_challenge(
         &mut self,
-        comm: Box<dyn CommitmentData>,
-        inclusion_block: BlockID,
+        comm: Arc<Box<dyn CommitmentData + Send + Sync>>,
+        inclusion_block: BlockNumHash,
         comm_block_number: u64,
     ) {
         let challenge = Challenge {
@@ -91,32 +127,33 @@ impl State {
             input: None,
             challenge_status: ChallengeStatus::Active,
         };
+
         let key = challenge.key();
-        self.challenges.push(challenge);
-        self.challenges_map.insert(key, self.challenges.last().unwrap().clone());
+        self.challenges.push(challenge.clone());
+        self.challenges_map.insert(key, challenge);
     }
 
     pub fn resolve_challenge(
         &mut self,
-        comm: &dyn CommitmentData,
-        inclusion_block: BlockID,
+        comm: Arc<Box<dyn CommitmentData + Send + Sync>>,
         comm_block_number: u64,
         input: Bytes,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), AltDaError> {
         let key = challenge_key(comm, comm_block_number);
         if let Some(challenge) = self.challenges_map.get_mut(&key) {
             challenge.input = Some(input);
             challenge.challenge_status = ChallengeStatus::Resolved;
             Ok(())
         } else {
-            Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "challenge was not tracked",
-            )))
+            Err(AltDaError::NotFound)
         }
     }
 
-    pub fn track_commitment(&mut self, comm: Box<dyn CommitmentData>, inclusion_block: L1BlockRef) {
+    pub fn track_commitment(
+        &mut self,
+        comm: Arc<Box<dyn CommitmentData + Send + Sync>>,
+        inclusion_block: BlockInfo,
+    ) {
         let commitment = Commitment {
             data: comm,
             inclusion_block,
@@ -127,7 +164,7 @@ impl State {
 
     pub fn get_challenge(
         &self,
-        comm: &dyn CommitmentData,
+        comm: Arc<Box<dyn CommitmentData + Send + Sync>>,
         comm_block_number: u64,
     ) -> Option<&Challenge> {
         let key = challenge_key(comm, comm_block_number);
@@ -136,7 +173,7 @@ impl State {
 
     pub fn get_challenge_status(
         &self,
-        comm: &dyn CommitmentData,
+        comm: Arc<Box<dyn CommitmentData + Send + Sync>>,
         comm_block_number: u64,
     ) -> ChallengeStatus {
         self.get_challenge(comm, comm_block_number)
@@ -150,35 +187,35 @@ impl State {
             && self.expired_commitments.is_empty()
     }
 
-    pub fn expire_commitments(&mut self, origin: BlockID) -> Result<(), AltDaError> {
+    pub fn expire_commitments(&mut self, origin: BlockNumHash) -> Result<(), AltDaError> {
         let mut reorg_required = false;
+        let mut expired_indices = Vec::new();
 
-        while let Some(commitment) = self.commitments.first() {
-            let challenge =
-                self.get_challenge(&*commitment.data, commitment.inclusion_block.number);
-
-            let expires_at =
-                challenge.map_or(commitment.challenge_window_end, |c| c.resolve_window_end);
+        for (index, commitment) in self.commitments.iter().enumerate() {
+            let challenge_key =
+                challenge_key(commitment.clone().data, commitment.inclusion_block.number);
+            let expires_at = self
+                .challenges_map
+                .get(&challenge_key)
+                .map_or(commitment.challenge_window_end, |c| c.resolve_window_end);
 
             if expires_at > origin.number {
                 break;
             }
 
-            let commitment = self.commitments.remove(0);
-            self.log.info(
-                "Expiring commitment",
-                log::o!("comm" => format!("{:?}", commitment.data),
-                                  "commInclusionBlockNumber" => commitment.inclusion_block.number,
-                                  "origin" => format!("{:?}", origin),
-                                  "challenged" => challenge.is_some()),
-            );
-            self.expired_commitments.push(commitment);
+            expired_indices.push(index);
 
-            if let Some(challenge) = challenge {
+            if let Some(challenge) = self.challenges_map.get(&challenge_key) {
                 if challenge.challenge_status != ChallengeStatus::Resolved {
                     reorg_required = true;
                 }
             }
+        }
+
+        // Remove expired commitments in reverse order to maintain correct indices
+        for &index in expired_indices.iter().rev() {
+            let commitment = self.commitments.remove(index);
+            self.expired_commitments.push(commitment);
         }
 
         if reorg_required {
@@ -188,17 +225,13 @@ impl State {
         }
     }
 
-    pub fn expire_challenges(&mut self, origin: BlockID) {
+    pub fn expire_challenges(&mut self, origin: BlockNumHash) {
         while let Some(challenge) = self.challenges.first() {
             if challenge.resolve_window_end > origin.number {
                 break;
             }
 
             let challenge = self.challenges.remove(0);
-            self.log.info("Expiring challenge",
-                          log::o!("comm" => format!("{:?}", challenge.comm_data),
-                                  "commInclusionBlockNumber" => challenge.comm_inclusion_block_number,
-                                  "origin" => format!("{:?}", origin)));
             self.expired_challenges.push(challenge);
 
             if let Some(challenge) = self.expired_challenges.last_mut() {
@@ -209,15 +242,15 @@ impl State {
         }
     }
 
-    pub fn prune(&mut self, origin: BlockID) {
+    pub fn prune(&mut self, origin: BlockNumHash) {
         self.prune_commitments(origin);
         self.prune_challenges(origin);
     }
 
-    fn prune_commitments(&mut self, origin: BlockID) {
+    fn prune_commitments(&mut self, origin: BlockNumHash) {
         while let Some(commitment) = self.expired_commitments.first() {
             let challenge =
-                self.get_challenge(&*commitment.data, commitment.inclusion_block.number);
+                self.get_challenge(commitment.clone().data, commitment.inclusion_block.number);
 
             let expires_at =
                 challenge.map_or(commitment.challenge_window_end, |c| c.resolve_window_end);
@@ -231,7 +264,7 @@ impl State {
         }
     }
 
-    fn prune_challenges(&mut self, origin: BlockID) {
+    fn prune_challenges(&mut self, origin: BlockNumHash) {
         while let Some(challenge) = self.expired_challenges.first() {
             if challenge.resolve_window_end > origin.number {
                 break;

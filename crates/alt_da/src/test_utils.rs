@@ -2,13 +2,15 @@
 
 use crate::{
     traits::AltDaInputFetcher,
-    types::{AltDaError, FinalizedHeadSignal},
+    types::{AltDaError, CommitmentData, FinalizedHeadSignal},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloy_eips::BlockNumHash;
 use alloy_primitives::Bytes;
 use async_trait::async_trait;
 use kona_derive::traits::test_utils::TestChainProvider;
-use kona_primitives::{BlockID, BlockInfo, SystemConfig};
+use op_alloy_genesis::SystemConfig;
+use op_alloy_protocol::BlockInfo;
 
 /// A mock altda input fetcher for testing.
 #[derive(Debug, Clone, Default)]
@@ -26,31 +28,23 @@ impl AltDaInputFetcher<TestChainProvider> for TestAltDAInputFetcher {
     async fn get_input(
         &mut self,
         _fetcher: &TestChainProvider,
-        _commitment: Bytes,
-        _block: BlockID,
-    ) -> Option<Result<Bytes, AltDaError>> {
-        self.inputs.pop()
+        _commitment: Arc<Box<dyn CommitmentData + Send + Sync>>,
+        _block: BlockNumHash,
+    ) -> Result<Bytes, AltDaError> {
+        self.inputs.pop().unwrap()
     }
 
     async fn advance_l1_origin(
         &mut self,
         _fetcher: &TestChainProvider,
-        _block: BlockID,
-    ) -> Option<Result<(), AltDaError>> {
-        self.advances.pop()
+        _block: BlockNumHash,
+    ) -> Result<(), AltDaError> {
+        self.advances.pop().unwrap()
     }
 
-    async fn reset(
-        &mut self,
-        _block_number: BlockInfo,
-        _cfg: SystemConfig,
-    ) -> Option<Result<(), AltDaError>> {
-        self.resets.pop()
-    }
+    fn reset(&mut self, _block_number: BlockInfo, _cfg: SystemConfig) {}
 
-    async fn finalize(&mut self, _block_number: BlockInfo) -> Option<Result<(), AltDaError>> {
-        None
-    }
+    async fn finalize(&mut self, _block_number: BlockInfo) {}
 
     fn on_finalized_head_signal(&mut self, _block_number: FinalizedHeadSignal) {}
 }
