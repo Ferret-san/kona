@@ -13,9 +13,9 @@ pub mod traits;
 pub mod types;
 
 #[cfg(feature = "online")]
-mod online;
+mod provider;
 #[cfg(feature = "online")]
-pub use online::OnlineAltDAInputFetcher;
+pub use provider::AltDAProvider;
 #[cfg(feature = "online")]
 mod da_client;
 #[cfg(feature = "online")]

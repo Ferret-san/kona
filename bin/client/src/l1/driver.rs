@@ -4,12 +4,20 @@
 //! [OptimismPayloadAttributes]: op_alloy_rpc_types_engine::OptimismPayloadAttributes
 
 use super::OracleL1ChainProvider;
-use crate::{l2::OracleL2ChainProvider, BootInfo, HintType};
+use crate::{
+    altda::altda_provider::OracleDaStorage, l2::OracleL2ChainProvider, BootInfo, HintType,
+};
 use alloc::sync::Arc;
 use alloy_consensus::{Header, Sealed};
 use alloy_primitives::B256;
 use anyhow::{anyhow, Result};
 use core::fmt::Debug;
+use kona_altda::{
+    alt_da::AltDaDataSource,
+    traits::AltDaInputFetcher,
+    types::{CommitmentType, GenericCommitment, InputFetcherConfig},
+    AltDAProvider,
+};
 use kona_derive::{
     attributes::StatefulAttributesBuilder,
     errors::PipelineErrorKind,
@@ -38,6 +46,15 @@ pub type OraclePipeline<O, B> = DerivationPipeline<
 
 /// An oracle-backed Ethereum data source.
 pub type OracleDataProvider<O, B> = EthereumDataSource<OracleL1ChainProvider<O>, B>;
+
+/// An AltDA-backed derivation pipeline.
+pub type OracleAltDaPipeline<O, B> = DerivationPipeline<
+    OracleAttributesQueue<
+        AltDaDataSource<OracleL1ChainProvider<O>, B, AltDAProvider<OracleDaStorage<O>>>,
+        O,
+    >,
+    OracleL2ChainProvider<O>,
+>;
 
 /// An oracle-backed payload attributes builder for the `AttributesQueue` stage of the derivation
 /// pipeline.
@@ -76,7 +93,7 @@ where
     /// The header of the L2 safe head.
     l2_safe_head_header: Sealed<Header>,
     /// The inner pipeline.
-    pipeline: OraclePipeline<O, B>,
+    pipeline: OracleAltDaPipeline<O, B>,
 }
 
 impl<O, B> DerivationDriver<O, B>
@@ -116,6 +133,7 @@ where
         blob_provider: B,
         mut chain_provider: OracleL1ChainProvider<O>,
         mut l2_chain_provider: OracleL2ChainProvider<O>,
+        altda_provider: OracleDaStorage<O>,
     ) -> Result<Self> {
         let cfg = Arc::new(boot_info.rollup_config.clone());
 
@@ -134,7 +152,19 @@ where
             l2_chain_provider.clone(),
             chain_provider.clone(),
         );
-        let dap = EthereumDataSource::new(chain_provider.clone(), blob_provider, &cfg);
+
+        // TODO (Diego): Modify to support altda pipeline / derivation
+        let ethereum_source = EthereumDataSource::new(chain_provider.clone(), blob_provider, &cfg);
+        let input_fetcher = AltDAProvider::new_alt_da(
+            InputFetcherConfig {
+                da_challenge_contract: cfg.da_challenge_address.unwrap(),
+                commitment_type: CommitmentType::Generic,
+                challenge_window: 0,
+                resolve_window: 0,
+            },
+            altda_provider,
+        );
+        let dap = AltDaDataSource::new(chain_provider.clone(), input_fetcher, ethereum_source);
 
         // Walk back the starting L1 block by `channel_timeout` to ensure that the full channel is
         // captured.

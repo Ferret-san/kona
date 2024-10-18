@@ -1,8 +1,10 @@
 //! Module contains an online implementation of the AltDA Input Fetcher.
 
+use core::fmt::Debug;
+
 use crate::{
     state::{ChallengeStatus, State},
-    traits::AltDaInputFetcher,
+    traits::{AltDaInputFetcher, DAStorage},
     types::{
         decode_challenge_status_event, decode_commitment_data, decode_resolved_input, AltDaError,
         CommitmentData, CommitmentType, FinalizedHeadSignal, InputFetcherConfig,
@@ -24,23 +26,14 @@ use op_alloy_genesis::SystemConfig;
 use op_alloy_protocol::BlockInfo;
 use tokio::sync::Mutex;
 
-/// Trait for calling the DA storage server
-#[async_trait]
-pub trait DAStorage: Send + Sync {
-    async fn get_input(
-        &self,
-        key: Arc<Box<dyn CommitmentData + Send + Sync>>,
-    ) -> Result<Bytes, AltDaError>;
-    async fn set_input(
-        &self,
-        img: &Bytes,
-    ) -> Result<Box<dyn CommitmentData + Send + Sync>, AltDaError>;
-}
-
-/// An Online AltDa Input Fetcher.\
-pub struct OnlineAltDAInputFetcher {
+/// An AltDa Provider.
+#[derive(Clone, Debug)]
+pub struct AltDAProvider<D>
+where
+    D: DAStorage + Clone + Debug,
+{
     cfg: InputFetcherConfig,
-    storage: Arc<dyn DAStorage>,
+    storage: D,
     state: State,
 
     challenge_origin: BlockNumHash,
@@ -53,9 +46,12 @@ pub struct OnlineAltDAInputFetcher {
     finalized_head_signal_handler: Option<FinalizedHeadSignal>,
 }
 
-impl OnlineAltDAInputFetcher {
-    pub fn new_alt_da(cfg: InputFetcherConfig, storage: Arc<dyn DAStorage>) -> Self {
-        OnlineAltDAInputFetcher {
+impl<D> AltDAProvider<D>
+where
+    D: DAStorage + Clone + Debug,
+{
+    pub fn new_alt_da(cfg: InputFetcherConfig, storage: D) -> Self {
+        AltDAProvider {
             cfg: cfg.clone(),
             storage,
             state: State::new(cfg.clone()),
@@ -68,12 +64,8 @@ impl OnlineAltDAInputFetcher {
         }
     }
 
-    pub fn new_alt_da_with_state(
-        cfg: InputFetcherConfig,
-        storage: Arc<dyn DAStorage>,
-        state: State,
-    ) -> Self {
-        OnlineAltDAInputFetcher {
+    pub fn new_alt_da_with_state(cfg: InputFetcherConfig, storage: D, state: State) -> Self {
+        AltDAProvider {
             cfg,
             storage,
             state,
@@ -309,11 +301,26 @@ impl OnlineAltDAInputFetcher {
         };
         Ok((challenge_status, commitment, block_number))
     }
+
+    async fn finalize(&mut self, block_number: BlockInfo) {
+        self.update_finalized_head(block_number);
+
+        tracing::info!("received l1 finalized signal, forwarding altda finalization to finalizedHeadSignalHandler");
+
+        if let Some(handler) = &self.finalized_head_signal_handler {
+            handler.call(self.finalized_head);
+        } else {
+            tracing::warn!("finalized head signal handler not set");
+        }
+    }
 }
 
 /// Move code from the impl to the
 #[async_trait]
-impl AltDaInputFetcher<AlloyChainProvider> for OnlineAltDAInputFetcher {
+impl<D> AltDaInputFetcher<AlloyChainProvider> for AltDAProvider<D>
+where
+    D: DAStorage + Clone + Debug,
+{
     async fn get_input(
         &mut self,
         fetcher: &AlloyChainProvider,
@@ -390,21 +397,5 @@ impl AltDaInputFetcher<AlloyChainProvider> for OnlineAltDAInputFetcher {
             self.state.reset();
         }
         tracing::error!("{}", PipelineError::Eof);
-    }
-
-    async fn finalize(&mut self, block_number: BlockInfo) {
-        self.update_finalized_head(block_number);
-
-        tracing::info!("received l1 finalized signal, forwarding altda finalization to finalizedHeadSignalHandler");
-
-        if let Some(handler) = &self.finalized_head_signal_handler {
-            handler(self.finalized_head);
-        } else {
-            tracing::warn!("finalized head signal handler not set");
-        }
-    }
-
-    fn on_finalized_head_signal(&mut self, callback: FinalizedHeadSignal) {
-        self.finalized_head_signal_handler = Some(callback);
     }
 }

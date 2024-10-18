@@ -11,6 +11,7 @@ use alloy_rpc_types::{
     Block, BlockNumberOrTag, BlockTransactions, BlockTransactionsKind, Transaction,
 };
 use anyhow::{anyhow, Result};
+use kona_altda::{traits::DAStorage, types::decode_commitment_data, DAClient};
 use kona_client::HintType;
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_primitives::IndexedBlobHash;
@@ -34,6 +35,8 @@ where
     l1_provider: ReqwestProvider,
     /// The blob provider
     blob_provider: OnlineBlobProvider<OnlineBeaconClient, SimpleSlotDerivation>,
+    /// The altDA provider
+    altda_provider: Option<DAClient>,
     /// L2 chain provider.
     /// TODO: OP provider, N = Optimism
     l2_provider: ReqwestProvider,
@@ -55,7 +58,35 @@ where
         l2_provider: ReqwestProvider,
         l2_head: B256,
     ) -> Self {
-        Self { kv_store, l1_provider, blob_provider, l2_provider, l2_head, last_hint: None }
+        Self {
+            kv_store,
+            l1_provider,
+            blob_provider,
+            altda_provider: None,
+            l2_provider,
+            l2_head,
+            last_hint: None,
+        }
+    }
+
+    /// Create a new [Fetcher] with the given [KeyValueStore].
+    pub const fn new_altda_fetcher(
+        kv_store: Arc<RwLock<KV>>,
+        l1_provider: ReqwestProvider,
+        blob_provider: OnlineBlobProvider<OnlineBeaconClient, SimpleSlotDerivation>,
+        alt_da_provider: DAClient,
+        l2_provider: ReqwestProvider,
+        l2_head: B256,
+    ) -> Self {
+        Self {
+            kv_store,
+            l1_provider,
+            blob_provider,
+            altda_provider: Some(alt_da_provider),
+            l2_provider,
+            l2_head,
+            last_hint: None,
+        }
     }
 
     /// Set the last hint to be received.
@@ -509,6 +540,50 @@ where
                     kv_write_lock.set(key.into(), node.into())?;
                     Ok::<(), anyhow::Error>(())
                 })?;
+            }
+            HintType::L2Input => {
+                let data;
+
+                // check that the altda provider is set
+                match &self.altda_provider {
+                    Some(alt_da_provider) => {
+                        // decode the commitment to ensure its either Keccak or Generic
+                        let commitment = match decode_commitment_data(&hint_data) {
+                            Ok(comm) => comm,
+                            Err(err) => {
+                                anyhow::bail!("L2Input failed to decode commitment: {}", err)
+                            }
+                        };
+                        // fetch data from the altda provider
+                        data = match alt_da_provider.get_input(Arc::new(commitment)).await {
+                            Ok(result) => result,
+                            Err(err) => {
+                                anyhow::bail!("L2Input failed to decode commitment: {}", err)
+                            }
+                        };
+                    }
+                    None => {
+                        anyhow::bail!("L2Input hint called with no altda provider set")
+                    }
+                }
+
+                let mut kv_write_lock = self.kv_store.write().await;
+
+                // NOTE: commitment should include the <sender> contract address for the given altda service
+                let alt_da_commitment_hash = keccak256(&hint_data);
+
+                // store altda commitment and idex by keccak256 hash
+                kv_write_lock.set(
+                    PreimageKey::new(*alt_da_commitment_hash, PreimageKeyType::Keccak256).into(),
+                    hint_data.into(),
+                )?;
+
+                // store the preimage to the altda commitment using the GlobalGeneric key
+                kv_write_lock.set(
+                    PreimageKey::new(*alt_da_commitment_hash, PreimageKeyType::GlobalGeneric)
+                        .into(),
+                    data.into(),
+                )?;
             }
         }
 

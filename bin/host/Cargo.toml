@@ -18,6 +18,7 @@ kona-client.workspace = true
 kona-common.workspace = true
 kona-preimage.workspace = true
 kona-providers-alloy.workspace = true
+kona-altda.workspace = true
 kona-primitives = { workspace = true, features = ["online"] }
 
 # Alloy & Revm
@@ -25,8 +26,8 @@ alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-rlp.workspace = true
 alloy-provider.workspace = true
-alloy-transport-http.workspace = true 
-alloy-rpc-client.workspace = true 
+alloy-transport-http.workspace = true
+alloy-rpc-client.workspace = true
 alloy-rpc-types = { workspace = true, features = ["eth"] }
 alloy-primitives = { workspace = true, features = ["serde"] }
 op-alloy-genesis = { workspace = true, features = ["std", "serde"] }

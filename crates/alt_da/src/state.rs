@@ -19,13 +19,14 @@ pub enum ChallengeStatus {
     Expired,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Commitment {
     pub data: Arc<Box<dyn CommitmentData + Send + Sync>>,
     pub inclusion_block: BlockInfo,
     pub challenge_window_end: u64,
 }
 
+#[derive(Debug)]
 pub struct Challenge {
     pub commitment_data: Arc<Box<dyn CommitmentData + Send + Sync>>,
     pub commitment_inclusion_block_number: u64,
@@ -64,6 +65,7 @@ fn challenge_key(
     format!("{:016x}{}", inclusion_block_number, hex::encode(&encoded))
 }
 
+#[derive(Debug)]
 pub struct State {
     pub commitments: Vec<Commitment>,
     pub expired_commitments: Vec<Commitment>,

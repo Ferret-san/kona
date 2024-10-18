@@ -2,6 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloy_primitives::hex;
 use alloy_primitives::utils::keccak256;
@@ -83,7 +84,30 @@ impl Display for AltDaError {
 }
 
 /// A callback method for the finalized head signal.
-pub type FinalizedHeadSignal = Box<dyn Fn(BlockInfo) + Send + Sync>;
+
+pub struct FinalizedHeadSignal(Arc<dyn Fn(BlockInfo) + Send + Sync>);
+
+impl FinalizedHeadSignal {
+    pub fn new(f: impl Fn(BlockInfo) + Send + Sync + 'static) -> Self {
+        FinalizedHeadSignal(Arc::new(f))
+    }
+
+    pub fn call(&self, block_info: BlockInfo) {
+        (self.0)(block_info)
+    }
+}
+
+impl Clone for FinalizedHeadSignal {
+    fn clone(&self) -> Self {
+        FinalizedHeadSignal(Arc::clone(&self.0))
+    }
+}
+
+impl core::fmt::Debug for FinalizedHeadSignal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FinalizedHeadSignal").field("function", &"<function>").finish()
+    }
+}
 
 /// Max input size ensures the canonical chain cannot include input batches too large to
 /// challenge in the Data Availability Challenge contract. Value in number of bytes.

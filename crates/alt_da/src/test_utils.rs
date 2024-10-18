@@ -44,7 +44,7 @@ impl AltDaInputFetcher<TestChainProvider> for TestAltDAInputFetcher {
 
     fn reset(&mut self, _block_number: BlockInfo, _cfg: SystemConfig) {}
 
-    async fn finalize(&mut self, _block_number: BlockInfo) {}
+    // async fn finalize(&mut self, _block_number: BlockInfo) {}
 
-    fn on_finalized_head_signal(&mut self, _block_number: FinalizedHeadSignal) {}
+    // fn on_finalized_head_signal(&mut self, _block_number: FinalizedHeadSignal) {}
 }

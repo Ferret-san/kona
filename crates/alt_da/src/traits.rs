@@ -1,5 +1,7 @@
 //! This module contains traits for the altda extension of the derivation pipeline.
 
+use core::fmt::Debug;
+
 use crate::types::{AltDaError, CommitmentData, FinalizedHeadSignal};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -31,10 +33,14 @@ pub trait AltDaInputFetcher<CP: ChainProvider + Send> {
 
     /// Reset the challenge origin in case of L1 reorg.
     fn reset(&mut self, base: BlockInfo, _base_cfg: SystemConfig);
+}
 
-    /// Notify L1 finalized head so altda finality is always behind L1.
-    async fn finalize(&mut self, block_number: BlockInfo);
-
-    /// Set the engine finalization signal callback.
-    fn on_finalized_head_signal(&mut self, callback: FinalizedHeadSignal);
+/// Trait for calling the DA storage server
+#[async_trait]
+pub trait DAStorage: Send + Sync {
+    /// gets inputs for a commitment/key from the altda storage
+    async fn get_input(
+        &self,
+        key: Arc<Box<dyn CommitmentData + Send + Sync>>,
+    ) -> Result<Bytes, AltDaError>;
 }

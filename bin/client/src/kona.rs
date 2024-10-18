@@ -7,8 +7,11 @@
 
 extern crate alloc;
 
+use core::clone;
+
 use alloc::sync::Arc;
 use kona_client::{
+    altda::altda_provider::OracleDaStorage,
     l1::{DerivationDriver, OracleBlobProvider, OracleL1ChainProvider},
     l2::OracleL2ChainProvider,
     BootInfo, CachingOracle,
@@ -37,11 +40,13 @@ fn main() -> Result<()> {
         //                          PROLOGUE                          //
         ////////////////////////////////////////////////////////////////
 
+        // TODP (Diego): Add AltDAProvider to derivation pipeline
         let oracle = Arc::new(CachingOracle::new(ORACLE_LRU_SIZE, ORACLE_READER, HINT_WRITER));
         let boot = Arc::new(BootInfo::load(oracle.as_ref()).await?);
         let l1_provider = OracleL1ChainProvider::new(boot.clone(), oracle.clone());
         let l2_provider = OracleL2ChainProvider::new(boot.clone(), oracle.clone());
         let beacon = OracleBlobProvider::new(oracle.clone());
+        let da_storage = OracleDaStorage::new(oracle.clone());
 
         ////////////////////////////////////////////////////////////////
         //                   DERIVATION & EXECUTION                   //
@@ -54,6 +59,7 @@ fn main() -> Result<()> {
             beacon,
             l1_provider,
             l2_provider.clone(),
+            da_storage,
         )
         .await?;
 
