@@ -56,6 +56,12 @@ pub struct HostCli {
     /// Number of the L2 block that the claimed output root commits to.
     #[clap(long, visible_alias = "l2-block-number", env)]
     pub claimed_l2_block_number: u64,
+    /// Connection to celestia network
+    #[clap(long)]
+    pub celestia_connection: String,
+    /// Celestia Namespace to fetch data from
+    #[clap(long)]
+    pub namespace: String,
     /// Address of L2 JSON-RPC endpoint to use (eth and debug namespace required).
     #[clap(
         long,
@@ -123,9 +129,9 @@ pub struct HostCli {
 impl HostCli {
     /// Returns `true` if the host is running in offline mode.
     pub const fn is_offline(&self) -> bool {
-        self.l1_node_address.is_none() &&
-            self.l2_node_address.is_none() &&
-            self.l1_beacon_address.is_none()
+        self.l1_node_address.is_none()
+            && self.l2_node_address.is_none()
+            && self.l1_beacon_address.is_none()
     }
 
     /// Creates the providers associated with the [HostCli] configuration.

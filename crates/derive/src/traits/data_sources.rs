@@ -6,6 +6,7 @@ use alloc::{boxed::Box, fmt::Debug, vec::Vec};
 use alloy_eips::eip4844::Blob;
 use alloy_primitives::Bytes;
 use async_trait::async_trait;
+use celestia_types::{nmt::Namespace, Commitment};
 use core::fmt::Display;
 use kona_primitives::IndexedBlobHash;
 use op_alloy_protocol::BlockInfo;
@@ -37,6 +38,18 @@ pub trait DataAvailabilityProvider {
     async fn open_data(&self, block_ref: &BlockInfo) -> PipelineResult<Self::DataIter>;
 }
 
+/// Describes the functionality of the Celestia DA client needed to fetch a blob from calldata
+#[async_trait]
+pub trait CelestiaProvider {
+    type Error: Display;
+
+    async fn blob_get(
+        &self,
+        height: u64,
+        namespace: Namespace,
+        commitment: Commitment,
+    ) -> Result<Bytes, Self::Error>;
+}
 /// A simple asynchronous iterator trait.
 /// This should be replaced with the `async-iterator` crate
 #[async_trait]

@@ -2,12 +2,13 @@
 
 use crate::{
     errors::{BlobProviderError, PipelineError, PipelineResult},
-    traits::{AsyncIterator, BlobProvider},
+    traits::{AsyncIterator, BlobProvider, CelestiaProvider},
 };
 use alloc::{boxed::Box, format, string::ToString, vec::Vec};
 use alloy_consensus::{Transaction, TxEip4844Variant, TxEnvelope, TxType};
 use alloy_primitives::{Address, Bytes, TxKind};
 use async_trait::async_trait;
+use celestia_types::{nmt::Namespace, Commitment};
 use kona_primitives::{BlobData, IndexedBlobHash};
 use kona_providers::ChainProvider;
 use op_alloy_protocol::BlockInfo;
@@ -15,10 +16,11 @@ use tracing::warn;
 
 /// A data iterator that reads from a blob.
 #[derive(Debug, Clone)]
-pub struct BlobSource<F, B>
+pub struct BlobSource<F, B, CE>
 where
     F: ChainProvider + Send,
     B: BlobProvider + Send,
+    CE: CelestiaProvider + Send,
 {
     /// Chain provider.
     pub chain_provider: F,
@@ -34,12 +36,17 @@ where
     pub data: Vec<BlobData>,
     /// Whether the source is open.
     pub open: bool,
+    /// Celestia provider
+    pub celestia: CE,
+    /// Namespace to fetch celestia data from
+    pub namespace: Namespace,
 }
 
-impl<F, B> BlobSource<F, B>
+impl<F, B, CE> BlobSource<F, B, CE>
 where
     F: ChainProvider + Send,
     B: BlobProvider + Send,
+    CE: CelestiaProvider + Send,
 {
     /// Creates a new blob source.
     pub const fn new(
@@ -48,6 +55,8 @@ where
         batcher_address: Address,
         block_ref: BlockInfo,
         signer: Address,
+        celestia: CE,
+        namespace: Namespace,
     ) -> Self {
         Self {
             chain_provider,
@@ -57,10 +66,15 @@ where
             signer,
             data: Vec::new(),
             open: false,
+            celestia,
+            namespace,
         }
     }
 
-    fn extract_blob_data(&self, txs: Vec<TxEnvelope>) -> (Vec<BlobData>, Vec<IndexedBlobHash>) {
+    async fn extract_blob_data(
+        &self,
+        txs: Vec<TxEnvelope>,
+    ) -> (Vec<BlobData>, Vec<IndexedBlobHash>) {
         let mut index = 0;
         let mut data = Vec::new();
         let mut hashes = Vec::new();
@@ -91,7 +105,20 @@ where
                 continue;
             }
             if tx.tx_type() != TxType::Eip4844 {
-                let blob_data = BlobData { data: None, calldata: Some(calldata.to_vec().into()) };
+                let tx_data = if calldata[0] == 0xce {
+                    let height_bytes = &calldata[1..65];
+                    let height = u64::from_be_bytes(height_bytes.try_into().unwrap());
+                    let commitment = Commitment(calldata[65..97].try_into().unwrap());
+
+                    // Create a static future that's Send
+                    match self.celestia.blob_get(height, self.namespace, commitment).await {
+                        Ok(blob) => blob,
+                        Err(_) => continue,
+                    }
+                } else {
+                    Bytes::from(calldata.to_vec())
+                };
+                let blob_data = BlobData { data: None, calldata: Some(tx_data.to_vec().into()) };
                 data.push(blob_data);
                 continue;
             }
@@ -132,7 +159,7 @@ where
             .await
             .map_err(|e| BlobProviderError::Backend(e.to_string()))?;
 
-        let (mut data, blob_hashes) = self.extract_blob_data(info.1);
+        let (mut data, blob_hashes) = self.extract_blob_data(info.1).await;
 
         // If there are no hashes, set the calldata and return.
         if blob_hashes.is_empty() {
@@ -176,10 +203,11 @@ where
 }
 
 #[async_trait]
-impl<F, B> AsyncIterator for BlobSource<F, B>
+impl<F, B, CE> AsyncIterator for BlobSource<F, B, CE>
 where
-    F: ChainProvider + Send,
-    B: BlobProvider + Send,
+    F: ChainProvider + Send + Sync,
+    B: BlobProvider + Send + Sync,
+    CE: CelestiaProvider + Send + Sync,
 {
     type Item = Bytes;
 

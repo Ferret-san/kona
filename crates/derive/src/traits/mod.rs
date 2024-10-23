@@ -8,7 +8,7 @@ mod attributes;
 pub use attributes::{AttributesBuilder, NextAttributes};
 
 mod data_sources;
-pub use data_sources::{AsyncIterator, BlobProvider, DataAvailabilityProvider};
+pub use data_sources::{AsyncIterator, BlobProvider, CelestiaProvider, DataAvailabilityProvider};
 
 mod reset;
 pub use reset::ResetProvider;

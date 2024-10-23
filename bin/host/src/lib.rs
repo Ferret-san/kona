@@ -9,11 +9,16 @@ pub mod preimage;
 pub mod server;
 pub mod util;
 
+use alloy_primitives::hex;
 pub use cli::{init_tracing_subscriber, HostCli};
 use fetcher::Fetcher;
+use kona_client::celestia::celestia_provider;
+use kona_providers_alloy::celestia_provider::CelestiaClient;
 use server::PreimageServer;
 
 use anyhow::{anyhow, bail, Result};
+use celestia_rpc::Client;
+use celestia_types::nmt::Namespace;
 use command_fds::{CommandFdExt, FdMapping};
 use futures::FutureExt;
 use kona_common::FileDescriptor;
@@ -42,12 +47,23 @@ pub async fn start_server(cfg: HostCli) -> Result<()> {
 
     let kv_store = cfg.construct_kv_store();
 
+    let token = std::env::var("CELESTIA_NODE_AUTH_TOKEN").expect("Token not provided");
+
+    let celestia_rpc = Client::new(&cfg.celestia_connection, Some(&token))
+        .await
+        .expect("Failed creating rpc client");
+
+    let namespace_bytes = hex::decode(&cfg.namespace).expect("Invalid hex");
+    let namespace = Namespace::new_v0(&namespace_bytes).expect("Invalid namespace");
+
+    let celestia_provider = CelestiaClient::new(celestia_rpc, namespace);
     let fetcher = if !cfg.is_offline() {
         let (l1_provider, blob_provider, l2_provider) = cfg.create_providers().await?;
         Some(Arc::new(RwLock::new(Fetcher::new(
             kv_store.clone(),
             l1_provider,
             blob_provider,
+            celestia_provider,
             l2_provider,
             cfg.agreed_l2_head_hash,
         ))))
@@ -80,12 +96,24 @@ pub async fn start_server_and_native_client(cfg: HostCli) -> Result<i32> {
 
     let kv_store = cfg.construct_kv_store();
 
+    let token = std::env::var("CELESTIA_NODE_AUTH_TOKEN").expect("Token not provided");
+
+    let celestia_rpc = Client::new(&cfg.celestia_connection, Some(&token))
+        .await
+        .expect("Failed creating rpc client");
+
+    let namespace_bytes = hex::decode(&cfg.namespace).expect("Invalid hex");
+    let namespace = Namespace::new_v0(&namespace_bytes).expect("Invalid namespace");
+
+    let celestia_provider = CelestiaClient::new(celestia_rpc, namespace);
+
     let fetcher = if !cfg.is_offline() {
         let (l1_provider, blob_provider, l2_provider) = cfg.create_providers().await?;
         Some(Arc::new(RwLock::new(Fetcher::new(
             kv_store.clone(),
             l1_provider,
             blob_provider,
+            celestia_provider,
             l2_provider,
             cfg.agreed_l2_head_hash,
         ))))

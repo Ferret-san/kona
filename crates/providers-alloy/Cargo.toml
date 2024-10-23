@@ -45,6 +45,9 @@ thiserror = { workspace = true, optional = true }
 alloy-rpc-client = { workspace = true, optional = true }
 alloy-node-bindings = { workspace = true, optional = true }
 alloy-transport-http = { workspace = true, optional = true, features = ["reqwest"] } 
+celestia-rpc = "0.6.0"
+celestia-types = "0.6.1"
+anyhow.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

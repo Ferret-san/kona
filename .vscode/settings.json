@@ -1,0 +1,10 @@
+{
+    "rust-analyzer.cargo.features": [
+        "online"
+    ],
+    "rust-analyzer.checkOnSave.command": "clippy",
+    "rust-analyzer.checkOnSave.extraArgs": [
+        "--features",
+        "online"
+    ]
+}

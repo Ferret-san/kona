@@ -25,8 +25,8 @@ alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-rlp.workspace = true
 alloy-provider.workspace = true
-alloy-transport-http.workspace = true 
-alloy-rpc-client.workspace = true 
+alloy-transport-http.workspace = true
+alloy-rpc-client.workspace = true
 alloy-rpc-types = { workspace = true, features = ["eth"] }
 alloy-primitives = { workspace = true, features = ["serde"] }
 op-alloy-genesis = { workspace = true, features = ["std", "serde"] }
@@ -47,6 +47,8 @@ tracing-subscriber.workspace = true
 command-fds.workspace = true
 os_pipe.workspace = true
 rocksdb.workspace = true
+celestia-rpc = "0.6.0"
+celestia-types = "0.6.1"
 
 [dev-dependencies]
 proptest.workspace = true

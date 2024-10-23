@@ -9,7 +9,9 @@ use alloc::{sync::Arc, vec::Vec};
 use alloy_consensus::{Header, Sealed};
 use alloy_primitives::B256;
 use anyhow::{anyhow, Result};
+use celestia_types::nmt::Namespace;
 use core::fmt::Debug;
+
 use kona_derive::{
     attributes::StatefulAttributesBuilder,
     errors::PipelineErrorKind,
@@ -19,7 +21,7 @@ use kona_derive::{
         AttributesQueue, BatchQueue, BatchStream, ChannelBank, ChannelReader, FrameQueue,
         L1Retrieval, L1Traversal,
     },
-    traits::{BlobProvider, OriginProvider, Signal},
+    traits::{BlobProvider, CelestiaProvider, OriginProvider, Signal},
 };
 use kona_executor::{KonaHandleRegister, StatelessL2BlockExecutor};
 use kona_mpt::{TrieHinter, TrieProvider};
@@ -32,13 +34,13 @@ use op_alloy_rpc_types_engine::OpAttributesWithParent;
 use tracing::{error, info, warn};
 
 /// An oracle-backed derivation pipeline.
-pub type OraclePipeline<O, B> = DerivationPipeline<
-    OracleAttributesQueue<OracleDataProvider<O, B>, O>,
+pub type OraclePipeline<O, B, CE> = DerivationPipeline<
+    OracleAttributesQueue<OracleDataProvider<O, B, CE>, O>,
     OracleL2ChainProvider<O>,
 >;
 
 /// An oracle-backed Ethereum data source.
-pub type OracleDataProvider<O, B> = EthereumDataSource<OracleL1ChainProvider<O>, B>;
+pub type OracleDataProvider<O, B, CE> = EthereumDataSource<OracleL1ChainProvider<O>, B, CE>;
 
 /// An oracle-backed payload attributes builder for the `AttributesQueue` stage of the derivation
 /// pipeline.
@@ -67,23 +69,25 @@ pub type OracleAttributesQueue<DAP, O> = AttributesQueue<
 ///
 /// [OpPayloadAttributes]: op_alloy_rpc_types_engine::OpPayloadAttributes
 #[derive(Debug)]
-pub struct DerivationDriver<O, B>
+pub struct DerivationDriver<O, B, CE>
 where
     O: CommsClient + Send + Sync + Debug,
     B: BlobProvider + Send + Sync + Debug + Clone,
+    CE: CelestiaProvider + Send + Sync + Debug + Clone,
 {
     /// The current L2 safe head.
     l2_safe_head: L2BlockInfo,
     /// The header of the L2 safe head.
     l2_safe_head_header: Sealed<Header>,
     /// The inner pipeline.
-    pipeline: OraclePipeline<O, B>,
+    pipeline: OraclePipeline<O, B, CE>,
 }
 
-impl<O, B> DerivationDriver<O, B>
+impl<O, B, CE> DerivationDriver<O, B, CE>
 where
     O: CommsClient + Send + Sync + Debug,
     B: BlobProvider + Send + Sync + Debug + Clone,
+    CE: CelestiaProvider + Send + Sync + Debug + Clone,
 {
     /// Returns the current L2 safe head [L2BlockInfo].
     pub fn l2_safe_head(&self) -> &L2BlockInfo {
@@ -115,6 +119,8 @@ where
         boot_info: &BootInfo,
         caching_oracle: &O,
         blob_provider: B,
+        celestia_provider: CE,
+        namespace: Namespace,
         mut chain_provider: OracleL1ChainProvider<O>,
         mut l2_chain_provider: OracleL2ChainProvider<O>,
     ) -> Result<Self> {
@@ -135,7 +141,14 @@ where
             l2_chain_provider.clone(),
             chain_provider.clone(),
         );
-        let dap = EthereumDataSource::new(chain_provider.clone(), blob_provider, &cfg);
+
+        let dap = EthereumDataSource::new(
+            chain_provider.clone(),
+            blob_provider,
+            &cfg,
+            celestia_provider,
+            namespace,
+        );
 
         // Walk back the starting L1 block by `channel_timeout` to ensure that the full channel is
         // captured.
