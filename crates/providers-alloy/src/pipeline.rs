@@ -1,5 +1,6 @@
 //! Helper to construct a [DerivationPipeline] using online types.
 
+use crate::celestia_provider::CelestiaClient;
 use kona_derive::{
     attributes::StatefulAttributesBuilder,
     pipeline::{DerivationPipeline, PipelineBuilder},
@@ -26,6 +27,7 @@ pub type OnlinePipeline =
 pub type OnlineDataProvider = EthereumDataSource<
     AlloyChainProvider,
     OnlineBlobProviderWithFallback<OnlineBeaconClient, OnlineBeaconClient, SimpleSlotDerivation>,
+    CelestiaClient,
 >;
 
 /// An `online` payload attributes builder for the `AttributesQueue` stage of the derivation

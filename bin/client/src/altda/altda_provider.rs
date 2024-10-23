@@ -81,10 +81,7 @@ where
         commitment: Arc<Box<dyn CommitmentData + Send + Sync>>,
         block: BlockNumHash,
     ) -> Result<Bytes, AltDaError> {
-        match self.get_input(fetcher, commitment, block).await {
-            Ok(result) => return Ok(result),
-            Err(err) => return Err(err),
-        }
+        self.get_input(fetcher, commitment, block).await
     }
 
     /// Note, challenges are ignored for this current implementation

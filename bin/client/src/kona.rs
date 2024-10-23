@@ -7,11 +7,12 @@
 
 extern crate alloc;
 
-use core::clone;
-
 use alloc::sync::Arc;
+use alloy_primitives::hex;
+use celestia_types::nmt::Namespace;
+use dotenvy::var;
 use kona_client::{
-    altda::altda_provider::OracleDaStorage,
+    celestia::celestia_provider::OracleCelestiaProvider,
     l1::{DerivationDriver, OracleBlobProvider, OracleL1ChainProvider},
     l2::OracleL2ChainProvider,
     BootInfo, CachingOracle,
@@ -40,26 +41,31 @@ fn main() -> Result<()> {
         //                          PROLOGUE                          //
         ////////////////////////////////////////////////////////////////
 
-        // TODP (Diego): Add AltDAProvider to derivation pipeline
         let oracle = Arc::new(CachingOracle::new(ORACLE_LRU_SIZE, ORACLE_READER, HINT_WRITER));
         let boot = Arc::new(BootInfo::load(oracle.as_ref()).await?);
         let l1_provider = OracleL1ChainProvider::new(boot.clone(), oracle.clone());
         let l2_provider = OracleL2ChainProvider::new(boot.clone(), oracle.clone());
-        let beacon = OracleBlobProvider::new(oracle.clone());
-        let da_storage = OracleDaStorage::new(oracle.clone());
+        let beacon: OracleBlobProvider<
+            CachingOracle<kona_preimage::OracleReader, kona_preimage::HintWriter>,
+        > = OracleBlobProvider::new(oracle.clone());
+        let celestia_provider = OracleCelestiaProvider::new(oracle.clone());
 
         ////////////////////////////////////////////////////////////////
         //                   DERIVATION & EXECUTION                   //
         ////////////////////////////////////////////////////////////////
 
+        let namespace_var = var("NAMESPACE").expect("Failed to load namespace");
+        let namespace_bytes = hex::decode(namespace_var).expect("Invalid hex");
+        let namespace = Namespace::new_v0(&namespace_bytes).expect("Invalid namespace");
         // Create a new derivation driver with the given boot information and oracle.
         let mut driver = DerivationDriver::new(
             boot.as_ref(),
             oracle.as_ref(),
             beacon,
+            celestia_provider,
+            namespace,
             l1_provider,
             l2_provider.clone(),
-            da_storage,
         )
         .await?;
 

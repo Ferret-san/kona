@@ -8,27 +8,29 @@ use kona_providers::ChainProvider;
 use crate::{
     errors::PipelineResult,
     sources::{BlobSource, CalldataSource},
-    traits::{AsyncIterator, BlobProvider},
+    traits::{AsyncIterator, BlobProvider, CelestiaProvider},
 };
 
 /// An enum over the various data sources.
 #[derive(Debug, Clone)]
-pub enum EthereumDataSourceVariant<CP, B>
+pub enum EthereumDataSourceVariant<CP, B, CE>
 where
-    CP: ChainProvider + Send,
-    B: BlobProvider + Send,
+    CP: ChainProvider + Send + Sync,
+    B: BlobProvider + Send + Sync,
+    CE: CelestiaProvider + Send + Sync,
 {
     /// A calldata source.
-    Calldata(CalldataSource<CP>),
+    Calldata(CalldataSource<CP, CE>),
     /// A blob source.
-    Blob(BlobSource<CP, B>),
+    Blob(BlobSource<CP, B, CE>),
 }
 
 #[async_trait]
-impl<CP, B> AsyncIterator for EthereumDataSourceVariant<CP, B>
+impl<CP, B, CE> AsyncIterator for EthereumDataSourceVariant<CP, B, CE>
 where
-    CP: ChainProvider + Send,
-    B: BlobProvider + Send,
+    CP: ChainProvider + Send + Sync,
+    B: BlobProvider + Send + Sync,
+    CE: CelestiaProvider + Send + Sync,
 {
     type Item = Bytes;
 

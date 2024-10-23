@@ -42,3 +42,5 @@ pub use blob_provider::{
     BlobSidecarProvider, OnlineBlobProvider, OnlineBlobProviderBuilder,
     OnlineBlobProviderWithFallback, SimpleSlotDerivation, SlotDerivation,
 };
+
+pub mod celestia_provider;

@@ -18,7 +18,6 @@ kona-client.workspace = true
 kona-common.workspace = true
 kona-preimage.workspace = true
 kona-providers-alloy.workspace = true
-kona-altda.workspace = true
 kona-primitives = { workspace = true, features = ["online"] }
 
 # Alloy & Revm
@@ -48,6 +47,8 @@ tracing-subscriber.workspace = true
 command-fds.workspace = true
 os_pipe.workspace = true
 rocksdb.workspace = true
+celestia-rpc = "0.6.0"
+celestia-types = "0.6.1"
 
 [dev-dependencies]
 proptest.workspace = true

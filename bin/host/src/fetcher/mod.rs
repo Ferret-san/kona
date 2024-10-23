@@ -11,12 +11,16 @@ use alloy_rpc_types::{
     Block, BlockNumberOrTag, BlockTransactions, BlockTransactionsKind, Transaction,
 };
 use anyhow::{anyhow, Result};
-use kona_altda::{traits::DAStorage, types::decode_commitment_data, DAClient};
-use kona_client::HintType;
+use celestia_rpc::{BlobClient, Client};
+use celestia_types::{nmt::Namespace, Commitment};
+use kona_client::{celestia::celestia_provider, HintType};
 use kona_preimage::{PreimageKey, PreimageKeyType};
 use kona_primitives::IndexedBlobHash;
-use kona_providers_alloy::{OnlineBeaconClient, OnlineBlobProvider, SimpleSlotDerivation};
+use kona_providers_alloy::{
+    celestia_provider::CelestiaClient, OnlineBeaconClient, OnlineBlobProvider, SimpleSlotDerivation,
+};
 use op_alloy_protocol::BlockInfo;
+use reqwest::dns::Name;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::trace;
@@ -36,7 +40,7 @@ where
     /// The blob provider
     blob_provider: OnlineBlobProvider<OnlineBeaconClient, SimpleSlotDerivation>,
     /// The altDA provider
-    altda_provider: Option<DAClient>,
+    celestia_provider: CelestiaClient,
     /// L2 chain provider.
     /// TODO: OP provider, N = Optimism
     l2_provider: ReqwestProvider,
@@ -55,6 +59,7 @@ where
         kv_store: Arc<RwLock<KV>>,
         l1_provider: ReqwestProvider,
         blob_provider: OnlineBlobProvider<OnlineBeaconClient, SimpleSlotDerivation>,
+        celestia_provider: CelestiaClient,
         l2_provider: ReqwestProvider,
         l2_head: B256,
     ) -> Self {
@@ -62,27 +67,7 @@ where
             kv_store,
             l1_provider,
             blob_provider,
-            altda_provider: None,
-            l2_provider,
-            l2_head,
-            last_hint: None,
-        }
-    }
-
-    /// Create a new [Fetcher] with the given [KeyValueStore].
-    pub const fn new_altda_fetcher(
-        kv_store: Arc<RwLock<KV>>,
-        l1_provider: ReqwestProvider,
-        blob_provider: OnlineBlobProvider<OnlineBeaconClient, SimpleSlotDerivation>,
-        alt_da_provider: DAClient,
-        l2_provider: ReqwestProvider,
-        l2_head: B256,
-    ) -> Self {
-        Self {
-            kv_store,
-            l1_provider,
-            blob_provider,
-            altda_provider: Some(alt_da_provider),
+            celestia_provider,
             l2_provider,
             l2_head,
             last_hint: None,
@@ -541,46 +526,34 @@ where
                     Ok::<(), anyhow::Error>(())
                 })?;
             }
-            HintType::L2Input => {
-                let data;
-
-                // check that the altda provider is set
-                match &self.altda_provider {
-                    Some(alt_da_provider) => {
-                        // decode the commitment to ensure its either Keccak or Generic
-                        let commitment = match decode_commitment_data(&hint_data) {
-                            Ok(comm) => comm,
-                            Err(err) => {
-                                anyhow::bail!("L2Input failed to decode commitment: {}", err)
-                            }
-                        };
-                        // fetch data from the altda provider
-                        data = match alt_da_provider.get_input(Arc::new(commitment)).await {
-                            Ok(result) => result,
-                            Err(err) => {
-                                anyhow::bail!("L2Input failed to decode commitment: {}", err)
-                            }
-                        };
-                    }
-                    None => {
-                        anyhow::bail!("L2Input hint called with no altda provider set")
-                    }
+            HintType::L2CelestiaInput => {
+                // Validate the hint data length (uint64 + 32)
+                if hint_data.len() != 96 {
+                    anyhow::bail!("Invalid hint data length: {}", hint_data.len());
                 }
+
+                let height = u64::from_be_bytes(hint_data[0..64].try_into().unwrap());
+                let commitment = Commitment(hint_data[64..96].try_into().unwrap());
+
+                let data = match self
+                    .celestia_provider
+                    .client
+                    .blob_get(height, self.celestia_provider.namespace, commitment)
+                    .await
+                {
+                    Ok(blob) => Bytes::from(blob.data),
+                    Err(e) => anyhow::bail!("celestia blob not found."),
+                };
 
                 let mut kv_write_lock = self.kv_store.write().await;
 
-                // NOTE: commitment should include the <sender> contract address for the given altda service
-                let alt_da_commitment_hash = keccak256(&hint_data);
-
-                // store altda commitment and idex by keccak256 hash
-                kv_write_lock.set(
-                    PreimageKey::new(*alt_da_commitment_hash, PreimageKeyType::Keccak256).into(),
-                    hint_data.into(),
-                )?;
+                // Note: ommitting the sender contract, since this implementation is meant to be used for zk rollups
+                // which have other ways of veryfying this commitment
+                let celestia_commitment_hash = keccak256(&hint_data);
 
                 // store the preimage to the altda commitment using the GlobalGeneric key
                 kv_write_lock.set(
-                    PreimageKey::new(*alt_da_commitment_hash, PreimageKeyType::GlobalGeneric)
+                    PreimageKey::new(*celestia_commitment_hash, PreimageKeyType::GlobalGeneric)
                         .into(),
                     data.into(),
                 )?;
