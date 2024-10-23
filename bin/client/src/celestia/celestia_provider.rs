@@ -56,7 +56,8 @@ impl<T: CommsClient + Clone> OracleCelestiaProvider<T> {
 
 #[async_trait]
 impl<T: CommsClient + Sync + Send> CelestiaProvider for OracleCelestiaProvider<T> {
-    type Error: Display;
+    type Error = anyhow::Error;
+
     async fn blob_get(
         &self,
         height: u64,

@@ -8,7 +8,6 @@ use crate::{
 };
 use alloc::{boxed::Box, fmt::Debug};
 use alloy_primitives::{Address, Bytes};
-use alloy_transport_http::reqwest::dns::Name;
 use async_trait::async_trait;
 use celestia_types::nmt::Namespace;
 use kona_providers::ChainProvider;

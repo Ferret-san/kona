@@ -34,6 +34,8 @@ impl core::fmt::Debug for CelestiaClient {
 
 #[async_trait]
 impl CelestiaProvider for CelestiaClient {
+    type Error = anyhow::Error;
+
     async fn blob_get(
         &self,
         height: u64,

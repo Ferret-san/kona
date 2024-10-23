@@ -7,7 +7,6 @@ use crate::{
 use alloc::{boxed::Box, format, string::ToString, vec::Vec};
 use alloy_consensus::{Transaction, TxEip4844Variant, TxEnvelope, TxType};
 use alloy_primitives::{Address, Bytes, TxKind};
-use alloy_transport_http::reqwest::dns::Name;
 use async_trait::async_trait;
 use celestia_types::{nmt::Namespace, Commitment};
 use kona_primitives::{BlobData, IndexedBlobHash};

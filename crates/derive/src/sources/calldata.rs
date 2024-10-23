@@ -7,7 +7,6 @@ use crate::{
 use alloc::{boxed::Box, collections::VecDeque, format, string::String, sync::Arc, vec};
 use alloy_consensus::{Transaction, TxEnvelope};
 use alloy_primitives::{Address, Bytes, TxKind};
-use alloy_transport_http::reqwest::dns::Name;
 use async_trait::async_trait;
 use celestia_rpc::{BlobClient, Client};
 use celestia_types::{nmt::Namespace, Blob, Commitment};
